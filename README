@@ -9,6 +9,53 @@ This project contains the open sourced code of Gmail Backup
 (hosted at www.gmail-backup.com).
 
 
+Status (2026):
+==============
+
+This fork has been ported to Python 3 (tested with 3.11 - 3.14) and works with
+the current Gmail IMAP service. Python 2 is no longer supported.
+
+Google no longer accepts your normal account password over IMAP. You need to:
+
+  1. Enable IMAP in Gmail: Settings -> See all settings -> Forwarding and
+     POP/IMAP -> Enable IMAP.
+  2. Turn on 2-Step Verification for your Google account:
+     https://myaccount.google.com/signinoptions/twosv
+  3. Create an App Password: https://myaccount.google.com/apppasswords
+     and use it instead of your normal password.
+
+
+Usage:
+======
+
+The command line version needs only Python 3 (no extra packages):
+
+  ./gmail-backup.sh backup  <dir>  you@gmail.com            # asks for password
+  ./gmail-backup.sh backup  <dir>  you@gmail.com --stamp    # incremental
+  ./gmail-backup.sh restore <dir>  you@gmail.com
+  ./gmail-backup.sh list           you@gmail.com
+  ./gmail-backup.sh --help
+
+The password can also be given as an argument after the e-mail address or in
+the GMAIL_BACKUP_PASSWORD environment variable. Use a name ending with .zip
+instead of <dir> to store the backup in a ZIP archive.
+
+The GUI needs wxPython 4 (Phoenix):
+
+  python3 gmail-backup-gui.py
+
+
+Nix / Lix:
+==========
+
+  nix run .                    # command line version
+  nix run .#gui                # GUI (wxPython)
+  nix build .#gmail-backup     # or .#gmail-backup-gui
+  nix develop                  # shell with python3 + wxPython
+
+The flake needs the "nix-command" and "flakes" experimental features.
+
+
 Authors:
 ========
 Jan Svec        <honza.svec@gmail.com>
@@ -18,10 +65,9 @@ Filip Jurčíček  <filip.jurcicek@gmail.com>
 Homepage:
 =========
 
-You can always get the newest version of Gmail Backup from our website hosted
-at Google Code:
-
-http://code.google.com/p/gmail-backup-com/
+The original Google Code project (http://code.google.com/p/gmail-backup-com/)
+no longer exists. This is a fork of
+https://github.com/theringe/gmail-backup-com-alter
 
 
 License:

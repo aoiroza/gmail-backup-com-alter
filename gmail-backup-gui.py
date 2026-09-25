@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*-  coding: utf-8 -*-
 #   
 #   Gmail Backup GUI
@@ -24,7 +24,7 @@
 
 
 import os
-import wx, sys, optparse
+import wx, sys
 import xml.dom.minidom
 import threading
 import time
@@ -34,6 +34,7 @@ import wx
 import wx.html
 import wx.lib.dialogs
 import wx.lib.newevent
+import wx.adv
 
 
 import gmb as gmail_backup
@@ -45,8 +46,8 @@ import gettext
 
 import pickle
 
-GMB_GUI_REVISION = u'-Revision: 12345 -'
-GMB_GUI_DATE = u'-Date: 2017-07-12 -'
+GMB_GUI_REVISION = '-Revision: 12345 -'
+GMB_GUI_DATE = '-Date: 2026-09-25 -'
 
 GMB_GUI_REVISION = GMB_GUI_REVISION[11:-2]
 GMB_GUI_DATE = GMB_GUI_DATE[7:-2].split()[0]
@@ -55,11 +56,13 @@ MAX_REVISION = str(max(int(GMB_GUI_REVISION), int(gmail_backup.GMB_REVISION)))
 MAX_DATE = max(GMB_GUI_DATE, gmail_backup.GMB_DATE)
 
 if os.name == 'nt':
-    lang = locale.getdefaultlocale()[0]
-    os.environ['LANGUAGE'] = lang
+    lang = locale.getlocale()[0]
+    if lang:
+        os.environ['LANGUAGE'] = lang
 
-MESSAGES_DIR = os.path.join(os.path.dirname(sys.argv[0]), 'messages')
-gettext.install('gmail-backup', MESSAGES_DIR, unicode=1)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MESSAGES_DIR = os.path.join(BASE_DIR, 'messages')
+gettext.install('gmail-backup', MESSAGES_DIR)
 
 (UpdateLogEvent, EVT_UPDATE_LOG) = wx.lib.newevent.NewEvent()
 
@@ -102,19 +105,12 @@ class InterruptableThread(threading.Thread):
         elif res > 1:
             # """if it returns a number greater than one, you're in trouble, 
             # and you should call it again with exc=NULL to revert the effect"""
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, 0)
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, None)
             raise SystemError("PyThreadState_SetAsyncExc failed")
      
     def raise_exc(self, excobj):
-        assert self.isAlive(), "thread must be started"
-        for tid, tobj in threading._active.items():
-            if tobj is self:
-                self._async_raise(tid, excobj)
-                return
-        
-        # the thread was alive when we entered the loop, but was not found 
-        # in the dict, hence it must have been already terminated. should we raise
-        # an exception here? silently ignore?
+        assert self.is_alive(), "thread must be started"
+        self._async_raise(ctypes.c_ulong(self.ident), excobj)
     
     def terminate(self):
         # must raise the SystemExit type, instead of a SystemExit() instance
@@ -125,7 +121,7 @@ class ThreadedGMailBackup(gmail_backup.GMailBackup):
     def _runThread(self, method, *args, **kwargs):
         try:
             method(self, *args, **kwargs)
-        except:
+        except BaseException:
             type, error, tb = sys.exc_info()
             self.notifier.nException(type, error, tb)
 
@@ -157,19 +153,22 @@ class MainPanel(wx.Panel):
         colour = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
         self.SetBackgroundColour(colour)
 
-        logo = wx.StaticBitmap(self, wx.ID_ANY, wx.Bitmap(os.path.join(os.path.dirname(sys.argv[0]), 'gmb.gif')))
+        logo = wx.StaticBitmap(self, wx.ID_ANY, wx.Bitmap(os.path.join(BASE_DIR, 'gmb.gif')))
 
         self.revision    = wx.StaticText(self, -1, _("revision %s (%s)") % (MAX_REVISION, MAX_DATE))
    
         stGmailLogin    = wx.StaticText(self, -1, _("Gmail login:\n(full email address)"))
         self.login      = wx.TextCtrl(self, -1, size=(300,-1))
 
-        stGnailPassword = wx.StaticText(self, -1, _("Gmail password:"))
+        stGnailPassword = wx.StaticText(self, -1, _("Gmail App Password:"))
         self.password   = wx.TextCtrl(self, -1, size=(300,-1),  style=wx.TE_PASSWORD)
+        self.password.SetToolTip(_('''Google no longer accepts your normal account password over IMAP.
+Turn on 2-Step Verification and create an App Password at
+https://myaccount.google.com/apppasswords'''))
 
         stBckpFldr      = wx.StaticText(self, -1, _("Backup folder:"))
         self.folder     = wx.TextCtrl(self, -1, size=(300,-1))
-        self.folder.SetToolTipString( \
+        self.folder.SetToolTip( \
 _('''You can use following forms:
   directory
   filename.zip
@@ -191,11 +190,11 @@ You can write them either as $YEAR or ${YEAR}.'''))
         self.onlyNewest.SetValue(True)
         
         stSince         = wx.StaticText(self, -1, _("Since date:"))
-        self.since      = wx.DatePickerCtrl(self, -1, size=(300, -1))
+        self.since      = wx.adv.DatePickerCtrl(self, -1, size=(300, -1))
         self.since.Disable()
         
         stBefore          = wx.StaticText(self, -1, _("Before date:"))
-        self.before       = wx.DatePickerCtrl(self, -1, size=(300, -1))
+        self.before       = wx.adv.DatePickerCtrl(self, -1, size=(300, -1))
         self.before.Disable()
         
         line1           = wx.StaticLine(self, -1, size=(20,-1), style=wx.LI_HORIZONTAL)
@@ -241,7 +240,7 @@ You can write them either as $YEAR or ${YEAR}.'''))
 
         szrHorizontal5 = wx.BoxSizer(wx.HORIZONTAL)
         szrHorizontal5.Add(self.message, 0, wx.ALIGN_LEFT|wx.ALIGN_CENTER_VERTICAL, 0)     
-        szrHorizontal5.Add(self.progress, 0, wx.ALIGN_RIGHT|wx.ALIGN_CENTER_VERTICAL, 0)
+        szrHorizontal5.Add(self.progress, 0, wx.ALIGN_CENTER_VERTICAL, 0)
         
         szrHorizontal4 = wx.BoxSizer(wx.VERTICAL)
         szrHorizontal4.Add(self.log, 0, wx.ALIGN_LEFT, 30)     
@@ -252,9 +251,9 @@ You can write them either as $YEAR or ${YEAR}.'''))
         szrVertical.Add(self.revision, 0, wx.ALIGN_CENTER|wx.BOTTOM, 0)
         
         szrVertical.Add(szrGBS, 0, wx.ALIGN_CENTER|wx.ALL, 5)
-        szrVertical.Add(line1, 0, wx.GROW|wx.ALIGN_CENTER_VERTICAL|wx.RIGHT|wx.TOP, 5)     
+        szrVertical.Add(line1, 0, wx.GROW|wx.RIGHT|wx.TOP, 5)     
         szrVertical.Add(szrHorizontal4, 0, wx.ALIGN_CENTER_HORIZONTAL|wx.ALL, 15)
-        szrVertical.Add(line2, 0, wx.GROW|wx.ALIGN_CENTER_VERTICAL|wx.RIGHT|wx.TOP, 5)     
+        szrVertical.Add(line2, 0, wx.GROW|wx.RIGHT|wx.TOP, 5)     
         szrVertical.Add(szrHorizontal3, 0, wx.ALIGN_CENTER_HORIZONTAL|wx.ALL, 15)
         
         self.btnSlctFolder.Bind(wx.EVT_BUTTON, self.OnSelectDir)
@@ -406,7 +405,7 @@ You can write them either as $YEAR or ${YEAR}.'''))
             msg = '%s\n' % event.msg
             self.log.AppendText(msg)
         if event.percentage is not None:
-            self.progress.SetValue(event.percentage)
+            self.progress.SetValue(int(event.percentage))
         else:
             self.progress.SetValue(0)
         label = _('Processed %.2fMB, speed %.1fKB/s') % (event.total, event.speed)
@@ -473,7 +472,7 @@ You can write them either as $YEAR or ${YEAR}.'''))
         return True
 
     def OnTimerRunning(self, event):
-        if not self.currentThread.isAlive():
+        if not self.currentThread.is_alive():
             self.SetLabel(TITLE_IDLE)
             self.enableCntrls()
             self.btnStop.Disable()
@@ -550,7 +549,7 @@ class MainDialog(wx.Frame):
 
         wx.Frame.__init__(self, parent, ID, title, pos, size, style = style)
 
-        icon = wx.Icon(os.path.join(os.path.dirname(sys.argv[0]), 'gmb.ico'), wx.BITMAP_TYPE_ICO)
+        icon = wx.Icon(os.path.join(BASE_DIR, 'gmb.ico'), wx.BITMAP_TYPE_ICO)
         self.SetIcon(icon)
 
         # now create a panel (between menubar and statusbar) ...
@@ -619,7 +618,7 @@ Copyright (C) 2008-2011 by Jan Svec and Filip Jurcicek.
 </p>
 
 <p>
-See <a href="http://code.google.com/p/gmail-backup-com/">http://code.google.com/p/gmail-backup-com/</a>
+Ported to Python 3 in 2026.
 </p>
 """ 
 
@@ -636,7 +635,7 @@ class HtmlWindow(wx.html.HtmlWindow):
 class AboutBox(wx.Dialog):
     def __init__(self,  MAX_REVISION, MAX_DATE):
         wx.Dialog.__init__(self, None, -1, "About Gmail Backup",
-            style=wx.DEFAULT_DIALOG_STYLE|wx.THICK_FRAME|wx.RESIZE_BORDER|
+            style=wx.DEFAULT_DIALOG_STYLE|wx.RESIZE_BORDER|
                 wx.TAB_TRAVERSAL)
 
         colour = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
@@ -671,7 +670,7 @@ settings = collections.defaultdict(str)
 
 def settingsFn():
     """Generate a platform dependent config file."""
-    c_dir = os.path.dirname(sys.argv[0])
+    c_dir = BASE_DIR
     c_cfg = os.path.join(c_dir, 'gmail-backup-gui.cfg')
     if os.path.isfile(c_cfg):
         return c_cfg
@@ -712,7 +711,7 @@ def loadSettings():
         settings_fn = settingsFn()
         settingsMakedirs()
         fl = open(settings_fn, "rb")
-        settings = pickle.load(fl)
+        settings = pickle.load(fl, encoding='utf-8')
         fl.close()
     except:
         # no settings yet
@@ -726,7 +725,7 @@ if __name__ == "__main__":
     # load the settings when module is initialised
     loadSettings()
     
-    app = wx.PySimpleApp()
+    app = wx.App(False)
     
     dlg = MainDialog(None, -1, TITLE_IDLE)
     dlg.Center()

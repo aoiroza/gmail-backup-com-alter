@@ -7,7 +7,5 @@ cp gmail-backup.py gmail-backup-gui.py gmb.py dist_SH
 cp gmb.gif gmb.ico dist_SH
 cp gmail-backup.pot dist_SH
 
-svn export messages dist_SH/messages
-cp -r svc dist_SH
-rm -rf dist_SH/svc/.svn
-rm -rf dist_SH/svc/scripting/.svn
+cp -r messages dist_SH/messages
+cp gmail-backup.sh dist_SH
