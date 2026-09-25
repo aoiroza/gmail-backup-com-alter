@@ -1,4 +1,4 @@
-#!/usr/bin/env python2.5
+#!/usr/bin/env python3
 # -*-  coding: utf-8 -*-
 #
 #   Gmail Backup library
@@ -28,41 +28,20 @@ import imaplib
 import socket
 import zipfile
 import email
-import email.Utils
-import email.Header
-import email.Iterators
-import email.Header
-import email.Generator
-import email.Errors
-import sys
-if sys.version_info[:2] >= (2, 5):
-    import email.utils
-    import email.header
-    import email.iterators
-    import email.header
-    import email.generator
-    import email.errors
-
+import email.utils
+import email.header
 import time
-import datetime
 import re
-import codecs
-import socket
 import traceback
 import shutil
-import urllib
-import zipfile
 import string
 import unicodedata
 import gettext
 
-try:
-    from hashlib import md5
-except ImportError:
-    from md5 import md5
+from hashlib import md5
 
-GMB_REVISION = u'-Revision: 12346 -'  # Changed manually as I do not have access to the SVN repository. I preferred "20a", but that makes the program fail. And I don't want to mess with the official revision range.
-GMB_DATE = u'-Date: 2018-02-06 -'  # Changed manually as I do not have access to the SVN repository.
+GMB_REVISION = '-Revision: 12347 -'  # Changed manually as I do not have access to the SVN repository. I preferred "20a", but that makes the program fail. And I don't want to mess with the official revision range.
+GMB_DATE = '-Date: 2026-09-25 -'  # Changed manually as I do not have access to the SVN repository.
 
 GMB_REVISION = GMB_REVISION[11:-2]
 GMB_DATE = GMB_DATE[7:-2].split()[0]
@@ -72,19 +51,29 @@ SOCKET_TIMEOUT = 60 # timeout for socket operations
 
 MAX_LABEL_RETRIES = 5
 
-VERSION_URL = 'http://code.google.com/p/gmail-backup-com/source/list'
-
 SLEEP_FOR = 20 # After network error sleep for X seconds
 MAX_TRY = 5 # Maximum number of reconnects
 
-MESSAGES_DIR = os.path.join(os.path.dirname(sys.argv[0]), 'messages')
-gettext.install('gmail-backup', MESSAGES_DIR, unicode=1)
+IMAP_HOST = 'imap.gmail.com'
+# SEARCH response of large mailboxes is longer than the default 1MB line limit
+imaplib._MAXLINE = 100 * 1024 * 1024
+IMAP_PORT = 993
+
+MESSAGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'messages')
+gettext.install('gmail-backup', MESSAGES_DIR)
 
 def _onlyAscii(string):
-    if isinstance(string, unicode):
-        return string.encode('ascii', 'replace')
-    else:
-        return string.decode('ascii', 'replace').encode('ascii', 'replace')
+    if isinstance(string, bytes):
+        string = string.decode('ascii', 'replace')
+    return string.encode('ascii', 'replace').decode('ascii')
+
+def _toBytes(mail):
+    if isinstance(mail, str):
+        return mail.encode('utf-8', 'surrogateescape')
+    return mail
+
+def _parseMail(mail):
+    return email.message_from_bytes(_toBytes(mail))
 
 def _parseMsgId(msg):
     msg_id = msg['Message-Id']
@@ -92,23 +81,26 @@ def _parseMsgId(msg):
         from_ = msg['From']
         subj = msg['Subject']
         hash = md5()
-        hash.update(msg.as_string())
+        try:
+            hash.update(msg.as_bytes())
+        except Exception:
+            hash.update(str(msg).encode('utf-8', 'replace'))
         msg_id = '%s.%s.%s' % (from_, subj, hash.hexdigest())
     else:
-        msg_id = msg_id.lstrip('<').rstrip('>')
+        msg_id = str(msg_id).strip().lstrip('<').rstrip('>')
     msg_id = _onlyAscii(msg_id)
     return msg_id
 
 def _getMailInternalId(mail):
-    msg = email.message_from_string(mail)
+    msg = _parseMail(mail)
     return _parseMsgId(msg)
 
 def _getMailDate(mail):
-    msg = email.message_from_string(mail)
+    msg = _parseMail(mail)
     return _parseMsgDate(msg)
 
 def _getMailIMAPDate(mail):
-    msg = email.message_from_string(mail)
+    msg = _parseMail(mail)
     d = imaplib.Time2Internaldate(_parseMsgDate(msg))
     return d
 
@@ -123,16 +115,19 @@ def _convertTimeToNum(t):
 def _unicodeHeader(hdr):
     try:
         ret = []
-        for item, enc in email.Header.decode_header(hdr):
+        for item, enc in email.header.decode_header(str(hdr)):
+            if isinstance(item, str):
+                ret.append(item)
+                continue
             try:
                 if enc is not None:
                     ret.append(item.decode(enc))
                 else:
                     ret.append(item.decode('ascii', 'replace'))
-            except UnicodeDecodeError, LookupError:
+            except (UnicodeDecodeError, LookupError):
                 ret.append(item.decode('ascii', 'replace'))
         return ''.join(ret)
-    except:
+    except Exception:
         return _('<unparseable header>')
 
 def _getMsgInitials(msg):
@@ -146,7 +141,7 @@ def _getMsgInitials(msg):
     return from_address, subject
 
 def _getMailInitials(mail):
-    msg = email.message_from_string(mail)
+    msg = _parseMail(mail)
     return _getMsgInitials(msg)
     
 
@@ -158,7 +153,7 @@ def _trimDate(d):
             return ma
         else:
             return va
-    (tm_year, tm_mon, tm_mday, tm_hour, tm_min, tm_sec, tm_wday, tm_yday, tm_isdst) = d
+    (tm_year, tm_mon, tm_mday, tm_hour, tm_min, tm_sec, tm_wday, tm_yday, tm_isdst) = d[:9]
     tm_year = trim(1970, tm_year, 9999)
     tm_mon = trim(1, tm_mon, 12)
     tm_mday = trim(1, tm_mday, 31)
@@ -172,32 +167,35 @@ def _trimDate(d):
     try:
         # We will try to construct the time
         time.mktime(d)
-    except OverflowError:
+    except (OverflowError, ValueError):
         # If overflow error occurs, we will fallback to 0
-        d = time.localtime(0)
+        d = tuple(time.localtime(0))
     return d
 
 def _parseMsgDate(msg):
-    d = email.Utils.parsedate(msg['Date'])
+    try:
+        d = email.utils.parsedate(msg['Date'])
+    except Exception:
+        d = None
     if d is None:
-        d = time.localtime(0)
+        d = tuple(time.localtime(0))
     d = _trimDate(d)
     return d
 
 def _revertDict(d):
-    return dict((v, k) for (k, v) in d.iteritems())
+    return dict((v, k) for (k, v) in d.items())
 
 def _shiftDates(min_date, max_date):
     min_date = _trimDate(min_date)
     max_date = _trimDate(max_date)
-    shift_ts = 24*60*60 # 1 hour
+    shift_ts = 24*60*60 # 1 day
     try:
         min_t = time.localtime(time.mktime(min_date)-shift_ts)
-    except ValueError:
+    except (OverflowError, ValueError):
         min_t = time.localtime(time.mktime(min_date))
     try:
         max_t = time.localtime(time.mktime(max_date)+shift_ts)
-    except ValueError:
+    except (OverflowError, ValueError):
         max_t = time.localtime(time.mktime(max_date))
     min_t = _trimDate(min_t)
     max_t = _trimDate(max_t)
@@ -215,7 +213,7 @@ def _gmailTime2Internaldate(date_time):
     Fixes https://github.com/akarshsatija/gmail-backup-com/issues/29 and
     https://groups.google.com/forum/#!topic/gmail-backup-com-users/dBPuAoFS5Zk
 
-    Return string in form: '"DD-Mmm-YYYY"'.  The
+    Return string in form: 'DD-Mmm-YYYY'.  The
     date_time argument can be a number (int or float) representing
     seconds since epoch (as returned by time.time()), a 9-tuple
     representing local time (as returned by time.localtime()), or a
@@ -223,36 +221,43 @@ def _gmailTime2Internaldate(date_time):
     be in the correct format.
     """
 
-    if isinstance(date_time, (int, long, float)):
+    if isinstance(date_time, (int, float)):
         tt = time.localtime(date_time)
     elif isinstance(date_time, (tuple, time.struct_time)):
         tt = date_time
     elif isinstance(date_time, str) and (date_time[0],date_time[-1]) == ('"','"'):
-        return date_time        # Assume in correct format
+        return date_time[1:-1]  # Assume in correct format
     else:
         raise ValueError("date_time not of a known type")
 
-    return ('"%02d-%s-%04d"' %
+    return ('%02d-%s-%04d' %
         ((tt[2], _month_names[tt[1]], tt[0])))
 
 def imap_decode(s):
+    '''Decodes IMAP modified UTF-7 mailbox name (RFC 3501, 5.1.3)'''
+    if isinstance(s, bytes):
+        s = s.decode('ascii', 'replace')
     def sub(m):
-        ss = m.groups(1)[0]
+        ss = m.group(1)
         if not ss:
             return '&'
         else:
             ss = ('+'+ss+'-').replace(',', '/')
-            return ss.decode('utf-7')
+            return ss.encode('ascii').decode('utf-7')
     return re.sub('&(.*?)-', sub, s)
 
 def imap_encode(s):
+    '''Encodes unicode mailbox name into IMAP modified UTF-7 (RFC 3501, 5.1.3)'''
     def sub(m):
-        ss = m.groups(1)[0]
+        ss = m.group(1)
         if ss == '&':
             return '&-'
         else:
-            return ss.encode('utf-7').replace('+', '&').replace('/', ',')
-    return re.sub('([^\x20-\x25\x27-\x7e]+|&)', sub, s).encode('ascii', 'replace')
+            ss = ss.encode('utf-7').decode('ascii')
+            if not ss.endswith('-'):
+                ss += '-'
+            return ss.replace('+', '&').replace('/', ',')
+    return re.sub('([^\x20-\x25\x27-\x7e]+|&)', sub, s)
 
 def imap_unescape(s):
     ret = re.sub(r'\\([\\"])', r'\1', s)
@@ -262,11 +267,72 @@ def imap_escape(s):
     ret = re.sub(r'([\\"])', r'\\\1', s)
     return ret
 
+def imap_quote(s):
+    '''Quotes the mailbox name for use as IMAP command argument (Python 3
+    imaplib does not do it automatically)'''
+    if len(s) >= 2 and s[0] == s[-1] == '"':
+        return s
+    return '"%s"' % imap_escape(s)
+
+def _parseListResponse(lines):
+    '''Parses the untagged responses of IMAP LIST command into the list of
+    (flags, mailbox) pairs. Mailbox names stay in IMAP modified UTF-7.
+    '''
+    ret = []
+    for line in lines:
+        if line is None:
+            continue
+        if isinstance(line, tuple):
+            # Mailbox name sent as literal
+            head, literal = line
+            line = head.decode('ascii', 'replace')
+            line = re.sub(r'\{\d+\}$', '', line) + '"%s"' % imap_escape(literal.decode('ascii', 'replace'))
+        elif isinstance(line, bytes):
+            line = line.decode('ascii', 'replace')
+        match = re.match(r'^\((.*?)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(?:"((?:[^"\\]|\\.)*)"|(\S+))\s*$', line)
+        if not match:
+            continue
+        flags = match.group(1)
+        if match.group(2) is not None:
+            box = imap_unescape(match.group(2))
+        else:
+            box = match.group(3)
+        ret.append((flags, box))
+    return ret
+
+def imap_error_text(error):
+    '''Returns readable text of imaplib exception'''
+    if error.args:
+        text = error.args[0]
+    else:
+        text = str(error)
+    if isinstance(text, bytes):
+        text = text.decode('utf-8', 'replace')
+    return str(text)
+
+def _isAuthError(error):
+    text = imap_error_text(error)
+    return 'AUTHENTICATIONFAILED' in text or 'Invalid credentials' in text \
+        or 'Application-specific password required' in text \
+        or 'Web login required' in text
+
+AUTH_HELP = '''%s
+
+Gmail refused the login. Google no longer accepts your normal account password
+over IMAP. Use an App Password instead:
+
+  1. Turn on 2-Step Verification: https://myaccount.google.com/signinoptions/twosv
+  2. Create an App Password: https://myaccount.google.com/apppasswords
+  3. Use the generated 16-character password instead of your normal password.
+
+Also make sure IMAP access is enabled in Gmail settings (Forwarding and
+POP/IMAP tab).'''
+
 def _removeDiacritics(string):
     '''Removes any diacritics from `string`
     '''
-    if not isinstance(string, unicode):
-        string = unicode(string)
+    if isinstance(string, bytes):
+        string = string.decode('utf-8', 'replace')
     string = unicodedata.normalize('NFKD', string)
 
     output = ''
@@ -350,18 +416,18 @@ class ConsoleNotifier(GBNotifier):
 
     def uprint(self, msg):
         try:
-            print msg
+            print(msg)
         except UnicodeEncodeError:
-            print msg.encode('ascii', 'replace')
+            print(msg.encode('ascii', 'replace').decode('ascii'))
         sys.stdout.flush()
 
     def uprint2(self, msg):
         if not sys.stdout.isatty():
             return
         try:
-            print '\r%s    \r' % (msg, ),
+            print('\r%s    \r' % (msg, ), end='')
         except UnicodeEncodeError:
-            print '\r%s    \r' % (msg.encode('ascii', 'replace'), ),
+            print('\r%s    \r' % (msg.encode('ascii', 'replace').decode('ascii'), ), end='')
         sys.stdout.flush()
 
     def nVersion(self):
@@ -449,7 +515,7 @@ class ConsoleNotifier(GBNotifier):
         self.uprint(_('Error: %s') % msg)
 
     def nLog(self, msg):
-        self.uprint(unicode(msg))
+        self.uprint(str(msg))
 
     def nException(self, type, error, tb):
         if isinstance(error, socket.error):
@@ -458,7 +524,7 @@ class ConsoleNotifier(GBNotifier):
         elif isinstance(error, imaplib.IMAP4.abort):
             self.nError(_("IMAP aborted the transfer"))
         elif isinstance(error, imaplib.IMAP4.error):
-            self.nError(_("IMAP: %s") % error.message)
+            self.nError(_("IMAP: %s") % imap_error_text(error))
         elif isinstance(error, KeyboardInterrupt):
             self.nLog(_("Program interrupted by user"))
         else:
@@ -499,12 +565,14 @@ class MyIMAP4_SSL(imaplib.IMAP4_SSL):
         ret = []
         while size > 0:
             part = imaplib.IMAP4_SSL.read(self, min(size, step))
+            if not part:
+                break
             t2 = time.time()
             ret.append(part)
             self._nSpeed(self._t1, t2, len(part))
             self._t1 = t2
-            size -= step
-        return ''.join(ret)
+            size -= len(part)
+        return b''.join(ret)
 
     def send(self, data):
         step = 1024 * 32
@@ -639,18 +707,22 @@ class GMailConnection(object):
     def guessLanguage(self):
         present = set()
 
-        status, ret = self.con.list()
-        for i in ret:
-            match = re.match(r'^\(.*\)\s".*"\s"(\[.*\].*)"\s*$', i)
-            if not match:
-                continue
-            box = match.group(1)
-            present.add(box)
+        special = {}
 
-        for key, (all_mail, trash) in self.MAILBOX_NAMES.iteritems():
+        for flags, box in self.list():
+            present.add(box)
+            for flag in ('\\All', '\\Trash'):
+                if flag in flags.split():
+                    special[flag] = box
+
+        if '\\All' in special and '\\Trash' in special:
+            # RFC 6154 special-use attributes, independent of the Gmail language
+            return (special['\\All'], special['\\Trash'])
+
+        for key, (all_mail, trash) in self.MAILBOX_NAMES.items():
             if all_mail in present and trash in present:
                 return key
-        for key, (all_mail, trash) in self.MAILBOX_NAMES.iteritems():
+        for key, (all_mail, trash) in self.MAILBOX_NAMES.items():
             if all_mail in present:
                 self.notifier.nLog("Guessing language with internal code '%s', in case of problems contact us at honza.svec@gmail.com" % key)
                 return key
@@ -663,24 +735,28 @@ Possible causes are:
 - You are using unsupported language of Gmail. Please run the following
   command:
 
-  gmail-backup.exe list <your_address@gmail.com> <your_password>
+  gmail-backup list <your_address@gmail.com>
 
-  and send the output of this command to our user support group:
-
-  gmail-backup-com-users@googlegroups.com
-
-  Thank you''')
+  and report the output of this command.''')
         raise ValueError("Cannot access IMAP folders")
 
     def setLanguage(self, lang):
         self.lang = lang
-        self.ALL_MAILS = self.MAILBOX_NAMES[lang][0]
-        self.TRASH = self.MAILBOX_NAMES[lang][1]
+        if isinstance(lang, tuple):
+            self.ALL_MAILS, self.TRASH = lang
+        else:
+            self.ALL_MAILS = self.MAILBOX_NAMES[lang][0]
+            self.TRASH = self.MAILBOX_NAMES[lang][1]
     
     def connect(self, noguess=False):
-        self.con = MyIMAP4_SSL('imap.gmail.com', 993)
+        self.con = MyIMAP4_SSL(IMAP_HOST, IMAP_PORT)
         self.con.setNotifier(self.notifier)
-        self.con.login(self.username, self.password)
+        try:
+            self.con.login(self.username, self.password)
+        except imaplib.IMAP4.error as e:
+            if not self._wasLogged and _isAuthError(e):
+                raise imaplib.IMAP4.error(AUTH_HELP % imap_error_text(e))
+            raise
         self._wasLogged = True
         if self.lang is None and not noguess:
             lang = self.guessLanguage()
@@ -692,7 +768,9 @@ Possible causes are:
 
     def select(self, mailbox):
         self._lastMailbox = mailbox
-        self._call(self.con.select, mailbox)
+        typ, data = self._call(self.con.select, imap_quote(mailbox))
+        if typ != self.OK:
+            raise imaplib.IMAP4.error('SELECT %s failed: %s' % (mailbox, data))
 
     def reconnect(self):
         TRY = 1
@@ -707,15 +785,14 @@ Possible causes are:
                     self.search(self._lastSearch)
                 self.notifier.nLog(_("Reconnected!"))
                 return True
-            except:
-                e = sys.exc_info()[1]
+            except Exception as e:
                 if self.recoverableError(e):
-                    self.notifier.nLog(_("Not connected, sleeping for %d seconds") % SLEEP_FOR)
+                    self.notifier.nLog(_("Not connected, sleeping for %d seconds") % sleep)
                     time.sleep(sleep)
                     sleep *= 2
                     TRY += 1
                 else:
-                    raise e
+                    raise
         self.notifier.nLog(_("Unable to reconnect"))
         return False
 
@@ -724,7 +801,7 @@ Possible causes are:
         if data is None or data[0] is None:
             match = None
         else:
-            match = re.match(r'^.*:\s*<(.*)>$', data[0][1].strip())
+            match = re.match(r'^.*:\s*<(.*)>$', data[0][1].decode('ascii', 'replace').strip(), re.S)
         if match:
             # The message has Message-ID stored in it
             imsg_id = match.group(1)
@@ -733,8 +810,7 @@ Possible causes are:
         else:
             # We compute our synthetic Message-ID from the whole message
             mail = self.fetchMessage(num)
-            msg = email.message_from_string(mail)
-            imsg_id = _parseMsgId(msg)
+            imsg_id = _getMailInternalId(mail)
             return imsg_id
 
     def fetchMessage(self, num):
@@ -750,27 +826,22 @@ Possible causes are:
     def search(self, where):
         self._lastSearch = where
         typ, numbers = self._call(self.con.search, None, *where)
-        numbers = numbers[0].split()
+        numbers = [n.decode('ascii') for n in numbers[0].split()]
         return numbers
 
-    def lsub(self):
-        status, ret = self._call(self.con.lsub)
-        ret = [imap_unescape(i) for i in ret]
-        return ret
-
     def list(self):
+        '''Returns list of (flags, mailbox) pairs'''
         status, ret = self._call(self.con.list)
-        ret = [imap_unescape(i) for i in ret]
-        return ret
+        return _parseListResponse(ret)
 
     def create(self, label):
-        self._call(self.con.create, label)
+        self._call(self.con.create, imap_quote(label))
 
     def copy(self, message_set, label):
-        self._call(self.con.copy, message_set, label)
+        self._call(self.con.copy, message_set, imap_quote(label))
 
     def append(self, mailbox, flags, msg_date, msg):
-        self._call(self.con.append, mailbox, flags, msg_date, msg)
+        self._call(self.con.append, imap_quote(mailbox), flags, msg_date, _toBytes(msg))
 
     def store(self, nums, state, flags):
         self._call(self.con.store, nums, state, flags)
@@ -779,24 +850,23 @@ Possible causes are:
         self._call(self.con.expunge)
 
     def delete(self, mailbox):
-        self._call(self.con.delete, mailbox)
+        self._call(self.con.delete, imap_quote(mailbox))
 
     def _call(self, method, *args, **kwargs):
         # Dirty hack:
-        method_name = method.im_func.__name__
+        method_name = method.__name__
         while True:
             try:
                 method = getattr(self.con, method_name)
                 ret = method(*args, **kwargs)
                 return ret
-            except:
-                e = sys.exc_info()[1]
+            except Exception as e:
                 if self.recoverableError(e):
                     self.notifier.nLog(_("Network error occured, disconnected"))
                     if not self.reconnect():
-                        raise e
+                        raise
                 else:
-                    raise e
+                    raise
 
 class EmailStorage(object):
     @classmethod
@@ -845,7 +915,7 @@ class EmailStorage(object):
         # Replace "/" and "\" (directory separators) with "_" in all values in the dictionary ret.
         # We can't do this in _cleanFilename() as the file name being cleaned there can include valid directory separators.
         # This fixes Issue 17: https://code.google.com/p/gmail-backup-com/issues/detail?id=17.
-        ret = dict((k, v.replace('/', '_').replace('\\', '_')) for (k, v) in ret.iteritems())
+        ret = dict((k, v.replace('/', '_').replace('\\', '_')) for (k, v) in ret.items())
         
         return ret
 
@@ -887,11 +957,8 @@ class DirectoryStorage(EmailStorage):
         for idx, msg_fn in enumerate(listing):
             try:
                 full_msg_fn = os.path.join(self.fn, msg_fn)
-                fr = file(full_msg_fn, 'rb')
-                try:
+                with open(full_msg_fn, 'rb') as fr:
                     msg = fr.read()
-                finally:
-                    fr.close()
 
                 msg_date2 = _getMailDate(msg)
                 msg_date2_num = time.mktime(msg_date2)
@@ -938,7 +1005,7 @@ class DirectoryStorage(EmailStorage):
                 except:
                     self.notifier.handleError(_("Error while reading MessageID from stored message"))
         else:
-            fr = file(cache, 'r')
+            fr = open(cache, 'r', encoding='utf-8', errors='replace')
             for line in fr:
                 try:
                     items = line.strip().split(None, 1)
@@ -957,13 +1024,13 @@ class DirectoryStorage(EmailStorage):
         fn = self.idsFilename()
         if os.path.exists(fn):
             os.remove(fn)
-        fw = file(fn, 'w')
+        fw = open(fn, 'w', encoding='utf-8')
         for msg_iid, msg_fn in sorted(self.message_iid2fn.items(), key=lambda item: item[1]):
             try:
                 line = '%s\t%s' % (msg_fn, msg_iid)
-                print >> fw, line
-            except:
-                self.notifier.nError(_("Errorneous message in file: %s, please report it to <honza.svec@gmail.com>") % msg_fn)
+                print(line, file=fw)
+            except Exception:
+                self.notifier.nError(_("Errorneous message in file: %s") % msg_fn)
         fw.close()
 
     def idsOfMessages(self):
@@ -980,7 +1047,6 @@ class DirectoryStorage(EmailStorage):
         '''Cleans the filename - removes diacritics and other filesystem special characters
         '''
         fn = _removeDiacritics(fn)
-        fn = fn.encode('utf-8', 'replace')
         if os.name == 'posix':
             good_chars = set('!"#\'()+-0123456789:;<=>@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]_abcdefghijklmnopqrstuvwxyz{}/\\')
         elif os.name == 'nt':
@@ -996,7 +1062,7 @@ class DirectoryStorage(EmailStorage):
         return ret
 
     def getMailFilename(self, mail):
-        msg = email.message_from_string(mail)
+        msg = _parseMail(mail)
         values = self._templateDict(msg)
         fn = self.fragment.safe_substitute(values)
         fn = self._cleanFilename(fn)
@@ -1017,11 +1083,8 @@ class DirectoryStorage(EmailStorage):
             full_fn_num = os.path.join(self.fn, msg_fn_num)
             if not os.path.exists(full_fn_num):
                 break
-        fw = file(full_fn_num, 'wb')
-        try:
-            fw.write(msg)
-        finally:
-            fw.close()
+        with open(full_fn_num, 'wb') as fw:
+            fw.write(_toBytes(msg))
         # Only store msg_fn_num and msg_iid if the writing to the file above succeeded.
         self.message_iid2fn[msg_iid] = msg_fn_num
         self.message_fn2iid[msg_fn_num] = msg_iid
@@ -1038,7 +1101,7 @@ class DirectoryStorage(EmailStorage):
             shutil.copy(assign_fn, assign_fn_old)
 
     def _escapeLabels(self, labels):
-        utf8_labels = [imap_decode(s) for s in labels]
+        utf8_labels = [imap_decode(s) for s in sorted(labels)]
         return ' '.join(s.replace('\t', '\\\t').replace(' ', '\\ ') for s in utf8_labels)
 
     def _unescapeLabels(self, string):
@@ -1056,9 +1119,11 @@ class DirectoryStorage(EmailStorage):
         fn = self.labelFilename()
         self.message_iid2labels = {}
         if os.path.isfile(fn):
-            fr = codecs.open(fn, 'r', 'utf-8')
+            fr = open(fn, 'r', encoding='utf-8')
             for line in fr:
                 items = line.split(None, 1)
+                if len(items) < 2:
+                    continue
                 msg_fn = items[0]
                 msg_iid = self.message_fn2iid.get(msg_fn, None)
                 if msg_iid is not None:
@@ -1070,23 +1135,23 @@ class DirectoryStorage(EmailStorage):
         fn = self.labelFilename()
         if os.path.exists(fn):
             os.remove(fn)
-        fw = codecs.open(fn, 'w', 'utf-8')
+        fw = open(fn, 'w', encoding='utf-8')
         for msg_iid, labels in sorted(self.message_iid2labels.items()):
             msg_fn = self.message_iid2fn.get(msg_iid)
             if msg_fn is None:
                 # We are unable do determine the filename for msg_iid
                 continue
-            print >> fw, '%s\t%s' % (msg_fn, self._escapeLabels(labels))
+            print('%s\t%s' % (msg_fn, self._escapeLabels(labels)), file=fw)
         fw.close()
 
     def lastStamp(self):
         stampFile = self.stampFile()
         try:
-            fr = file(stampFile, 'r')
-            for line in fr:
-                last_time = line.strip()
-                break
-            fr.close()
+            last_time = None
+            with open(stampFile, 'r') as fr:
+                for line in fr:
+                    last_time = line.strip()
+                    break
         except IOError:
             last_time = None
 
@@ -1103,9 +1168,8 @@ class DirectoryStorage(EmailStorage):
         stampFile = self.stampFile()
         if os.path.exists(stampFile):
             os.remove(stampFile)
-        fw = file(stampFile, 'w')
-        print >> fw, last_time
-        fw.close()
+        with open(stampFile, 'w') as fw:
+            print(last_time, file=fw)
 
 class ZipStorage(DirectoryStorage):
     def __init__(self, fn, notifier):
@@ -1182,7 +1246,7 @@ class ZipStorage(DirectoryStorage):
                 idx += 1
                 if not msg_fn_num in listing:
                     break
-            zip.writestr(msg_fn_num, msg)
+            zip.writestr(msg_fn_num, _toBytes(msg))
         finally:
             zip.close()
         # Only store msg_fn_num and msg_iid if the writing to the zip file above succeeded.
@@ -1223,14 +1287,10 @@ class GMailBackup(object):
         self.connection.close()
 
     def getLabels(self):
-        ret = self.connection.list()
         labels = []
-        for i in ret:
-            match = re.match(r'^(\(.*\))\s".*?"\s"(.*)"\s*$', i)
-            flags = match.group(1)
-            if '\\HasNoChildren' not in flags:
+        for flags, label in self.connection.list():
+            if '\\noselect' in flags.lower():
                 continue
-            label = match.group(2)
             if not re.match(r'^\[.*\].*$', label) and label != 'INBOX':
                 labels.append(label)
         labels.append('INBOX')
@@ -1247,7 +1307,7 @@ class GMailBackup(object):
                 retries += 1
                 if retries > MAX_LABEL_RETRIES:
                     self.notifier.nError(_("Cannot backup the assignment of label: %s") % label)
-                    raise StopIteration
+                    return
                 else:
                     self.connection.select(label)
 
@@ -1264,8 +1324,9 @@ class GMailBackup(object):
                     if msg not in assignment:
                         assignment[msg] = set()
                     assignment[msg].add(i)
-            except:
+            except Exception:
                 self.notifier.handleError(_("Error while doing backup of label %r") % i)
+        self.connection.close()
         return assignment
 
     def backup(self, fn, where=['ALL'], stamp=False):
@@ -1304,7 +1365,7 @@ class GMailBackup(object):
                 try:
                     storage.store(msg)
                     msg_date = _getMailDate(msg)
-                    if msg_date > last_time or last_time is None:
+                    if last_time is None or msg_date > tuple(last_time):
                         last_time = msg_date
                 except:
                     self.notifier.handleError(_("Error while saving e-mail"))
@@ -1375,7 +1436,7 @@ class GMailBackup(object):
                 msg_date = _getMailIMAPDate(msg)
                 msg_date2 = _getMailDate(msg)
                 msg_iid = _getMailInternalId(msg)
-                self.connection.append(self.connection.ALL_MAILS, "(\Seen)", msg_date, msg)
+                self.connection.append(self.connection.ALL_MAILS, r"(\Seen)", msg_date, msg)
 
                 dates.add(msg_date2)
             except:
@@ -1405,8 +1466,8 @@ class GMailBackup(object):
 
         self.connection.select(self.connection.TRASH)
         data = self.connection.search(['ALL'])
+        nums = ','.join(data)
         if nums:
-            nums = ','.join(data)
             self.connection.store(nums, 'FLAGS.SILENT', '\\Deleted')
             self.connection.expunge()
 
@@ -1421,12 +1482,9 @@ class GMailBackup(object):
 
         ret = self.connection.list()
 
-        for i in ret:
-            match = re.match(r'^\(.*\)\s".*"\s"(.*)"\s*$', i)
-            box = match.groups(1)[0]
-
-            self.connection.select(box)
+        for flags, box in ret:
             try:
+                self.connection.select(box)
                 data = self.connection.search(['ALL'])
                 num = len(data)
             except imaplib.IMAP4.error:
@@ -1434,30 +1492,9 @@ class GMailBackup(object):
             yield box, num
 
     def isNewVersion(self):
-        try:
-            fr = urllib.urlopen(VERSION_URL)
-            try:
-                data = fr.read()
-                url = 'http://code.google.com/p/gmail-backup-com/downloads/list'
-                version_match = re.search('<td class="id"><a href=".*?">r(\d+)</a></td>', data)
-                if version_match:
-                    try:
-                        new_revision = int(version_match.group(1))
-                        if new_revision > int(GMB_REVISION):
-                            return new_revision, url
-                    except ValueError:
-                        pass
-                return None, None
-            finally:
-                fr.close()
-        except:
-            return None, None
+        # The original update server (code.google.com) no longer exists
+        return None, None
 
     def reportNewVersion(self):
-        version, url = self.isNewVersion()
-        if version:
-            msg = _('New version of GMail Backup is available!\nYou can download version %s here:\n%s') % (version, url)
-        else:
-            msg = _("You are using the latest version of GMail Backup.")
-        self.notifier.nLog(msg)
-        return version
+        self.notifier.nLog(_("GMail Backup revision %s (%s)") % (GMB_REVISION, GMB_DATE))
+        return None
