@@ -76,6 +76,18 @@ Examples:
 ''' % {'env': PASSWORD_ENV}
 
 
+def _isDate(value):
+    return value is not None and len(value) == 8 and value.isdigit()
+
+
+def fixDateArgs(args):
+    '''The password is optional, so "backup dir user 20200101" puts the date
+    into the password slot. App Passwords are letters only, so a YYYYMMDD
+    value there is a date and the positional arguments are shifted.'''
+    if _isDate(args.password) and args.before is None:
+        args.password, args.since, args.before = None, args.password, args.since
+
+
 def getPassword(args):
     if args.password:
         return args.password
@@ -166,6 +178,8 @@ def buildParser():
 def main(argv=None):
     parser = buildParser()
     args = parser.parse_args(argv)
+    if args.command in ('backup', 'restore'):
+        fixDateArgs(args)
     notifier = ConsoleNotifier()
     try:
         args.func(args, notifier)
